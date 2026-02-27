@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>CrossFit Open Percentiles</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 24px; }
+      .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
+      .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; }
+      .card h2 { margin: 0 0 12px; font-size: 16px; }
+      .controls label { display: inline-block; margin-right: 10px; }
+      .controls input { width: 80px; padding: 6px; }
+      #chartWrap { width: min(1000px, 100%); }
+      canvas { max-width: 100%; }
+      .muted { color: #666; font-size: 12px; margin-top: 6px; }
+      .statline { margin: 6px 0; }
+      button { padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+      button:hover { background: #f6f6f6; }
+      .error { color: #b00020; }
+    </style>
+  </head>
+  <body>
+    <h1 style="margin-top:0;">CrossFit Open — Reps vs Percentile</h1>
+
+    <div class="row">
+      <div class="card controls">
+        <h2>Query</h2>
+        <div class="statline">
+          <label>Division <input id="division" value="1" /></label>
+          <label>Region <input id="region" value="0" /></label>
+          <label>Scaled <input id="scaled" value="0" /></label>
+        </div>
+        <div class="statline">
+          <label>View <input id="view" value="0" /></label>
+          <label>Sort <input id="sort" value="0" /></label>
+          <label>Buckets <input id="buckets" value="20" /></label>
+        </div>
+        <button id="loadBtn">Load</button>
+        <div id="status" class="muted"></div>
+        <div id="err" class="error"></div>
+      </div>
+
+      <div class="card" style="min-width: 320px;">
+        <h2>Stats</h2>
+        <div id="stats"></div>
+        <div class="muted">
+          “Submission rate” shown here is an estimate from sampled pages.
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="chartWrap" style="margin-top:24px;">
+      <h2>Chart</h2>
+      <canvas id="chart" height="120"></canvas>
+    </div>
+
+    <style>
+      #crosshairTooltip {
+        position: fixed;
+        background: rgba(0,0,0,0.75);
+        color: #fff;
+        padding: 6px 10px;
+        border-radius: 6px;
+        font-size: 13px;
+        pointer-events: none;
+        display: none;
+        white-space: nowrap;
+      }
+    </style>
+    <div id="crosshairTooltip"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script>
+      let chart;
+      let chartSeries = [];
+
+      // Linearly interpolate reps at any percentile value between data points.
+      function interpolateReps(series, xValue) {
+        if (!series.length) return null;
+        if (xValue <= series[0].x) return series[0].y;
+        if (xValue >= series[series.length - 1].x) return series[series.length - 1].y;
+        let lo = 0, hi = series.length - 1;
+        while (lo < hi - 1) {
+          const mid = (lo + hi) >> 1;
+          if (series[mid].x <= xValue) lo = mid; else hi = mid;
+        }
+        const p0 = series[lo], p1 = series[hi];
+        const t = (xValue - p0.x) / (p1.x - p0.x);
+        return Math.round(p0.y + t * (p1.y - p0.y));
+      }
+
+      // Plugin: draws a vertical crosshair + interpolated dot while hovering.
+      const crosshairPlugin = {
+        id: "interpolatedCrosshair",
+        afterDraw(chart) {
+          const { _crosshairX: cx, _crosshairY: cy } = chart;
+          if (cx === undefined) return;
+          const { ctx, scales: { x: xScale, y: yScale } } = chart;
+          ctx.save();
+          // Vertical dashed line
+          ctx.beginPath();
+          ctx.strokeStyle = "rgba(100,100,100,0.5)";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.moveTo(cx, yScale.top);
+          ctx.lineTo(cx, yScale.bottom);
+          ctx.stroke();
+          // Dot at the interpolated y position
+          if (cy !== undefined) {
+            ctx.beginPath();
+            ctx.setLineDash([]);
+            ctx.fillStyle = "rgba(54,162,235,1)";
+            ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          }
+          ctx.restore();
+        }
+      };
+
+      function fmtPct(x) {
+        if (x === null || x === undefined) return "—";
+        return (x * 100).toFixed(1) + "%";
+      }
+
+      function fmtInt(x) {
+        if (x === null || x === undefined) return "—";
+        return Number(x).toLocaleString();
+      }
+
+      function buildQuery() {
+        const params = new URLSearchParams({
+          division: document.getElementById("division").value.trim(),
+          region: document.getElementById("region").value.trim(),
+          scaled: document.getElementById("scaled").value.trim(),
+          view: document.getElementById("view").value.trim(),
+          sort: document.getElementById("sort").value.trim(),
+          buckets: document.getElementById("buckets").value.trim(),
+        });
+        return "/api/curve?" + params.toString();
+      }
+
+      function setStatus(msg) {
+        document.getElementById("status").textContent = msg || "";
+      }
+      function setError(msg) {
+        document.getElementById("err").textContent = msg || "";
+      }
+
+      async function loadData() {
+        setError("");
+        setStatus("Loading…");
+
+        const url = buildQuery();
+        const res = await fetch(url);
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`API error ${res.status}: ${text}`);
+        }
+        const data = await res.json();
+        setStatus("");
+
+        // Stats
+        const m = data.meta;
+        const est = m.estimatedSubmissionRate;
+        document.getElementById("stats").innerHTML = `
+          <div class="statline"><b>Total competitors:</b> ${fmtInt(m.totalCompetitors)}</div>
+          <div class="statline"><b>Total submitted:</b> ${fmtInt(m.totalSubmitted)}</div>
+          <div class="statline"><b>Total pages:</b> ${fmtInt(m.totalPages)}</div>
+          <div class="statline"><b>Last submission page:</b> ${fmtInt(m.lastSubmissionPage)}</div>
+          <div class="statline"><b>Sampled pages:</b> ${fmtInt(m.sampledPages)}</div>
+          <div class="statline"><b>Sampled rows:</b> ${fmtInt(m.sampledRows)}</div>
+          <div class="statline"><b>Estimated submissions:</b> ${fmtInt(m.sampledSubmittedRows)} / ${fmtInt(m.sampledRows)} (${fmtPct(est)})</div>
+          <div class="muted">${m.note}</div>
+        `;
+
+        // Chart data
+        const points = data.points || [];
+        // Percentile on x (0..100), reps on y
+        chartSeries = points.map(p => ({ x: p.percentile, y: p.reps }));
+
+        const canvasEl = document.getElementById("chart");
+        if (chart) chart.destroy();
+
+        chart = new Chart(canvasEl, {
+          type: "line",
+          plugins: [crosshairPlugin],
+          data: {
+            datasets: [{
+              label: "Reps vs Percentile",
+              data: chartSeries,
+              parsing: false,
+              pointRadius: 3,
+              borderWidth: 2,
+              tension: 0.25,
+            }]
+          },
+          options: {
+            responsive: true,
+            animation: false,
+            interaction: { mode: "none" },
+            plugins: { tooltip: { enabled: false } },
+            scales: {
+              x: {
+                type: "linear",
+                title: { display: true, text: "Percentile (higher = better)" },
+                min: 0,
+                max: 100
+              },
+              y: {
+                title: { display: true, text: "Reps" }
+              }
+            }
+          }
+        });
+
+        // Wire up continuous interpolated crosshair tooltip
+        const tooltipEl = document.getElementById("crosshairTooltip");
+
+        canvasEl.addEventListener("mousemove", (e) => {
+          const rect = canvasEl.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const xScale = chart.scales.x;
+          const yScale = chart.scales.y;
+
+          if (mouseX < xScale.left || mouseX > xScale.right) {
+            tooltipEl.style.display = "none";
+            chart._crosshairX = undefined;
+            chart._crosshairY = undefined;
+            chart.draw();
+            return;
+          }
+
+          const xValue = xScale.getValueForPixel(mouseX);
+          const yValue = interpolateReps(chartSeries, xValue);
+          if (yValue === null) return;
+
+          const yPixel = yScale.getPixelForValue(yValue);
+          chart._crosshairX = mouseX;
+          chart._crosshairY = yPixel;
+          chart.draw();
+
+          tooltipEl.textContent = `${yValue} reps @ ${xValue.toFixed(2)}th percentile`;
+          tooltipEl.style.display = "block";
+          tooltipEl.style.left = (e.clientX + 14) + "px";
+          tooltipEl.style.top  = (e.clientY - 28) + "px";
+        });
+
+        canvasEl.addEventListener("mouseleave", () => {
+          tooltipEl.style.display = "none";
+          chart._crosshairX = undefined;
+          chart._crosshairY = undefined;
+          chart.draw();
+        });
+      }
+
+      document.getElementById("loadBtn").addEventListener("click", async () => {
+        try {
+          await loadData();
+        } catch (e) {
+          setStatus("");
+          setError(e.message || String(e));
+        }
+      });
+
+      // auto-load once
+      loadData().catch(e => setError(e.message || String(e)));
+    </script>
+  </body>
+</html>
