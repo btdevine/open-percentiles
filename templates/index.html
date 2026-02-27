@@ -9,8 +9,8 @@
       .row { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-start; }
       .card { border: 1px solid #ddd; border-radius: 10px; padding: 16px; }
       .card h2 { margin: 0 0 12px; font-size: 16px; }
-      .controls label { display: inline-block; margin-right: 10px; }
-      .controls input { width: 80px; padding: 6px; }
+      .controls label { display: block; margin-bottom: 6px; }
+      .controls select, .controls input { padding: 6px 8px; border: 1px solid #ccc; border-radius: 6px; font-size: 14px; }
       #chartWrap { width: min(1000px, 100%); }
       canvas { max-width: 100%; }
       .muted { color: #666; font-size: 12px; margin-top: 6px; }
@@ -27,14 +27,59 @@
       <div class="card controls">
         <h2>Query</h2>
         <div class="statline">
-          <label>Division <input id="division" value="1" /></label>
-          <label>Region <input id="region" value="0" /></label>
-          <label>Scaled <input id="scaled" value="0" /></label>
+          <label>Division
+            <select id="division">
+              <option value="1">Men (Rx)</option>
+              <option value="2">Women (Rx)</option>
+              <optgroup label="Masters Men">
+                <option value="18">Men 35–39</option>
+                <option value="12">Men 40–44</option>
+                <option value="3">Men 45–49</option>
+                <option value="5">Men 50–54</option>
+                <option value="7">Men 55–59</option>
+              </optgroup>
+              <optgroup label="Masters Women">
+                <option value="19">Women 35–39</option>
+                <option value="13">Women 40–44</option>
+                <option value="4">Women 45–49</option>
+                <option value="6">Women 50–54</option>
+                <option value="8">Women 55–59</option>
+              </optgroup>
+              <optgroup label="Teens">
+                <option value="14">Boys 14–15</option>
+                <option value="15">Girls 14–15</option>
+                <option value="16">Boys 16–17</option>
+                <option value="17">Girls 16–17</option>
+              </optgroup>
+              <option value="11">Teams</option>
+            </select>
+          </label>
         </div>
         <div class="statline">
-          <label>View <input id="view" value="0" /></label>
-          <label>Sort <input id="sort" value="0" /></label>
-          <label>Buckets <input id="buckets" value="20" /></label>
+          <label>Region
+            <select id="region">
+              <option value="0">Worldwide</option>
+              <option value="30">Africa</option>
+              <option value="28">Asia</option>
+              <option value="29">Europe</option>
+              <option value="35">North America East</option>
+              <option value="34">North America West</option>
+              <option value="32">Oceania</option>
+              <option value="33">South America</option>
+            </select>
+          </label>
+        </div>
+        <div class="statline">
+          <label>Scaled
+            <select id="scaled">
+              <option value="0">Rx (Prescribed)</option>
+              <option value="1">Scaled</option>
+              <option value="2">Foundations</option>
+            </select>
+          </label>
+        </div>
+        <div class="statline">
+          <label>Buckets <input id="buckets" value="20" style="width:60px;" /></label>
         </div>
         <button id="loadBtn">Load</button>
         <div id="status" class="muted"></div>
@@ -133,11 +178,9 @@
 
       function buildQuery() {
         const params = new URLSearchParams({
-          division: document.getElementById("division").value.trim(),
-          region: document.getElementById("region").value.trim(),
-          scaled: document.getElementById("scaled").value.trim(),
-          view: document.getElementById("view").value.trim(),
-          sort: document.getElementById("sort").value.trim(),
+          division: document.getElementById("division").value,
+          region: document.getElementById("region").value,
+          scaled: document.getElementById("scaled").value,
           buckets: document.getElementById("buckets").value.trim(),
         });
         return "/api/curve?" + params.toString();
