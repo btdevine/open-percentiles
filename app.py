@@ -53,12 +53,22 @@ def _make_page_samples(total_pages: int, target_buckets: int = 20) -> List[int]:
     return sorted(set(pages))
 
 
-def _page_has_submissions(page_json: Dict[str, Any]) -> bool:
+def _score_for_ordinal(scores: List[Dict[str, Any]], ordinal: int) -> Dict[str, Any]:
+    for s in scores:
+        if s.get("ordinal") == ordinal:
+            return s
+    return {}
+
+
+def _page_has_submissions(page_json: Dict[str, Any], ordinal: int = 1) -> bool:
     rows = page_json.get("leaderboardRows") or []
-    return any(row.get("scores", [{}])[0].get("scoreDisplay") for row in rows)
+    return any(
+        _score_for_ordinal(row.get("scores") or [], ordinal).get("scoreDisplay")
+        for row in rows
+    )
 
 
-def _find_last_submission_page(base_params: Dict[str, Any], total_pages: int) -> Tuple[int, Dict[str, Any]]:
+def _find_last_submission_page(base_params: Dict[str, Any], total_pages: int, ordinal: int = 1) -> Tuple[int, Dict[str, Any]]:
     """Binary search for the last page that has at least one submitted score.
     Returns (page_number, page_json) so the caller can reuse the fetched data."""
     lo, hi = 1, total_pages
@@ -66,7 +76,7 @@ def _find_last_submission_page(base_params: Dict[str, Any], total_pages: int) ->
     while lo < hi:
         mid = (lo + hi + 1) // 2
         page_json = _get_json({**base_params, "page": mid})
-        if _page_has_submissions(page_json):
+        if _page_has_submissions(page_json, ordinal):
             lo = mid
             last_json = page_json
         else:
@@ -76,20 +86,21 @@ def _find_last_submission_page(base_params: Dict[str, Any], total_pages: int) ->
     return lo, last_json
 
 
-def _max_submitted_rank(page_json: Dict[str, Any]) -> int:
-    """Return the highest overallRank among athletes with a submitted score on this page."""
+def _max_submitted_rank(page_json: Dict[str, Any], ordinal: int = 1) -> int:
+    """Return the highest per-workout rank among athletes with a submitted score on this page."""
     rows = page_json.get("leaderboardRows") or []
     max_rank = 0
     for row in rows:
-        if row.get("scores", [{}])[0].get("scoreDisplay"):
+        score = _score_for_ordinal(row.get("scores") or [], ordinal)
+        if score.get("scoreDisplay"):
             try:
-                max_rank = max(max_rank, int(row.get("overallRank") or 0))
+                max_rank = max(max_rank, int(score.get("rank") or 0))
             except ValueError:
                 pass
     return max_rank
 
 
-def _extract_points_from_page(page_json: Dict[str, Any], fallback_total: int = 0, total_submitted: int = 0) -> Tuple[List[Dict[str, Any]], int, int]:
+def _extract_points_from_page(page_json: Dict[str, Any], fallback_total: int = 0, total_submitted: int = 0, ordinal: int = 1) -> Tuple[List[Dict[str, Any]], int, int]:
     """
     Returns:
       points: [{percentile, reps, rank}]
@@ -106,15 +117,14 @@ def _extract_points_from_page(page_json: Dict[str, Any], fallback_total: int = 0
 
     for row in rows:
         total_rows += 1
+
+        score = _score_for_ordinal(row.get("scores") or [], ordinal)
         try:
-            rank = int(row.get("overallRank") or 0)
+            rank = int(score.get("rank") or 0)
         except ValueError:
             continue
-
-        scores = row.get("scores") or []
-        first = scores[0] if scores else {}
-        valid = str(first.get("valid") or "") == "1"
-        reps = _parse_reps(first.get("scoreDisplay"), first.get("breakdown"))
+        valid = str(score.get("valid") or "") == "1"
+        reps = _parse_reps(score.get("scoreDisplay"), score.get("breakdown"))
 
         if valid and reps is not None:
             submitted_rows += 1
@@ -153,14 +163,15 @@ def api_curve():
       region (default 0)
       scaled (default 0)
       view (default 0)
-      sort (default 0)
+      sort (default = ordinal, so leaderboard is sorted by that workout's rank)
       buckets (default 20)
     """
     division = request.args.get("division", "1")
     region = request.args.get("region", "0")
     scaled = request.args.get("scaled", "0")
     view = request.args.get("view", "0")
-    sort = request.args.get("sort", "0")
+    ordinal = int(request.args.get("ordinal", "1"))
+    sort = request.args.get("sort", str(ordinal))
     buckets = int(request.args.get("buckets", "20"))
 
     base_params = {
@@ -171,7 +182,7 @@ def api_curve():
         "sort": sort,
     }
 
-    ck = _cache_key({**base_params, "buckets": buckets})
+    ck = _cache_key({**base_params, "buckets": buckets, "ordinal": ordinal})
     now = time.time()
     cached = _CACHE.get(ck)
     if cached and (now - cached["ts"]) < CACHE_TTL_SECONDS:
@@ -186,8 +197,8 @@ def api_curve():
     # 2) Binary search for the last page with submissions, then sample within that range.
     #    The leaderboard has many registered-but-unsubmitted athletes at the end; sampling
     #    across all pages yields mostly empty rows and only 1-2 data points.
-    last_sub_page, last_sub_json = _find_last_submission_page(base_params, total_pages)
-    total_submitted = _max_submitted_rank(last_sub_json)
+    last_sub_page, last_sub_json = _find_last_submission_page(base_params, total_pages, ordinal)
+    total_submitted = _max_submitted_rank(last_sub_json, ordinal)
     sample_pages = _make_page_samples(last_sub_page, buckets)
     # Always include page 1 (top performers) without an extra request
     if 1 not in sample_pages:
@@ -206,7 +217,7 @@ def api_curve():
             page_json = last_sub_json
         else:
             page_json = _get_json({**base_params, "page": p})
-        pts, sub, tot = _extract_points_from_page(page_json, total_competitors, total_submitted)
+        pts, sub, tot = _extract_points_from_page(page_json, total_competitors, total_submitted, ordinal)
         all_points.extend(pts)
         submitted_rows += sub
         total_rows += tot
@@ -234,6 +245,7 @@ def api_curve():
             "scaled": scaled,
             "view": view,
             "sort": sort,
+            "ordinal": ordinal,
             "totalPages": total_pages,
             "totalCompetitors": total_competitors,
             "lastSubmissionPage": last_sub_page,

@@ -17,6 +17,8 @@
       .statline { margin: 6px 0; }
       button { padding: 8px 12px; border-radius: 8px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
       button:hover { background: #f6f6f6; }
+      .workout-btn.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
+      .workout-btn:disabled { opacity: 0.4; cursor: default; }
       .error { color: #b00020; }
     </style>
   </head>
@@ -81,6 +83,14 @@
         <div class="statline">
           <label>Buckets <input id="buckets" value="20" style="width:60px;" /></label>
         </div>
+        <div class="statline">
+          <label>Workout</label>
+          <div id="workoutToggle" style="display:flex;gap:6px;margin-top:4px;">
+            <button class="workout-btn active" data-ordinal="1">26.1</button>
+            <button class="workout-btn" data-ordinal="2">26.2</button>
+            <button class="workout-btn" data-ordinal="3" disabled>26.3</button>
+          </div>
+        </div>
         <button id="loadBtn">Load</button>
         <div id="status" class="muted"></div>
         <div id="err" class="error"></div>
@@ -119,6 +129,15 @@
     <script>
       let chart;
       let chartSeries = [];
+      let selectedOrdinal = 1;
+
+      document.getElementById("workoutToggle").addEventListener("click", (e) => {
+        const btn = e.target.closest(".workout-btn");
+        if (!btn || btn.disabled) return;
+        document.querySelectorAll(".workout-btn").forEach(b => b.classList.remove("active"));
+        btn.classList.add("active");
+        selectedOrdinal = parseInt(btn.dataset.ordinal, 10);
+      });
 
       // Linearly interpolate reps at any percentile value between data points.
       function interpolateReps(series, xValue) {
@@ -182,6 +201,7 @@
           region: document.getElementById("region").value,
           scaled: document.getElementById("scaled").value,
           buckets: document.getElementById("buckets").value.trim(),
+          ordinal: selectedOrdinal,
         });
         return "/api/curve?" + params.toString();
       }
@@ -206,8 +226,12 @@
         const data = await res.json();
         setStatus("");
 
-        // Stats
+        // Update workout button labels from the year in meta
         const m = data.meta;
+        const yr = String(m.year).slice(-2);
+        document.querySelectorAll(".workout-btn").forEach(btn => {
+          btn.textContent = `${yr}.${btn.dataset.ordinal}`;
+        });
         const est = m.estimatedSubmissionRate;
         document.getElementById("stats").innerHTML = `
           <div class="statline"><b>Total competitors:</b> ${fmtInt(m.totalCompetitors)}</div>
@@ -228,12 +252,13 @@
         const canvasEl = document.getElementById("chart");
         if (chart) chart.destroy();
 
+        const workoutLabel = `${yr}.${selectedOrdinal} — Reps vs Percentile`;
         chart = new Chart(canvasEl, {
           type: "line",
           plugins: [crosshairPlugin],
           data: {
             datasets: [{
-              label: "Reps vs Percentile",
+              label: workoutLabel,
               data: chartSeries,
               parsing: false,
               pointRadius: 3,
