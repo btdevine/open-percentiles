@@ -154,6 +154,40 @@
         return Math.round(p0.y + t * (p1.y - p0.y));
       }
 
+      // Linearly interpolate finish time (seconds) within the completer region only.
+      function interpolateTime(series, xValue) {
+        const timed = series.filter(p => p.time != null);
+        if (timed.length < 2) return timed.length === 1 && timed[0].x === xValue ? timed[0].time : null;
+        if (xValue < timed[0].x || xValue > timed[timed.length - 1].x) return null;
+        let lo = 0, hi = timed.length - 1;
+        while (lo < hi - 1) {
+          const mid = (lo + hi) >> 1;
+          if (timed[mid].x <= xValue) lo = mid; else hi = mid;
+        }
+        const p0 = timed[lo], p1 = timed[hi];
+        const t = (xValue - p0.x) / (p1.x - p0.x);
+        return Math.round(p0.time + t * (p1.time - p0.time));
+      }
+
+      // Return the nearest data point to xValue (for tiebreak lookup).
+      function nearestPoint(series, xValue) {
+        if (!series.length) return null;
+        let lo = 0, hi = series.length - 1;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (series[mid].x < xValue) lo = mid + 1; else hi = mid;
+        }
+        if (lo === 0) return series[0];
+        const before = series[lo - 1], after = series[lo];
+        return (xValue - before.x) <= (after.x - xValue) ? before : after;
+      }
+
+      function fmtTime(seconds) {
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        return `${m}:${String(s).padStart(2, "0")}`;
+      }
+
       // Plugin: draws a vertical crosshair + interpolated dot while hovering.
       const crosshairPlugin = {
         id: "interpolatedCrosshair",
@@ -246,8 +280,8 @@
 
         // Chart data
         const points = data.points || [];
-        // Percentile on x (0..100), reps on y
-        chartSeries = points.map(p => ({ x: p.percentile, y: p.reps }));
+        // Percentile on x (0..100), reps on y, time in seconds when completer, tiebreak string otherwise
+        chartSeries = points.map(p => ({ x: p.percentile, y: p.reps, time: p.time ?? null, tiebreak: p.tiebreak ?? null }));
 
         const canvasEl = document.getElementById("chart");
         if (chart) chart.destroy();
@@ -311,7 +345,17 @@
           chart._crosshairY = yPixel;
           chart.draw();
 
-          tooltipEl.textContent = `${yValue} reps @ ${xValue.toFixed(2)}th percentile`;
+          const nearest = nearestPoint(chartSeries, xValue);
+          let timeSuffix = "";
+          if (nearest?.time != null) {
+            // Completer region: interpolate finish time
+            const timeVal = interpolateTime(chartSeries, xValue);
+            if (timeVal !== null) timeSuffix = ` — ${fmtTime(timeVal)}`;
+          } else if (nearest?.tiebreak) {
+            // Non-completer: show nearest data point's tiebreak
+            timeSuffix = ` — Tiebreak: ${nearest.tiebreak}`;
+          }
+          tooltipEl.textContent = `${yValue} reps @ ${xValue.toFixed(2)}th percentile${timeSuffix}`;
           tooltipEl.style.display = "block";
           tooltipEl.style.left = (e.clientX + 14) + "px";
           tooltipEl.style.top  = (e.clientY - 28) + "px";

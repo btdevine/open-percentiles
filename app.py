@@ -134,11 +134,19 @@ def _extract_points_from_page(page_json: Dict[str, Any], fallback_total: int = 0
         if reps is None or rank <= 0 or pct_base <= 0:
             continue
 
+        time_val = score.get("time")  # seconds; present only for completers
+
+        breakdown_text = score.get("breakdown") or ""
+        tb_match = re.search(r"Tiebreak:\s*(\d+:\d+)", breakdown_text)
+        tiebreak = tb_match.group(1) if tb_match else None
+
         points.append(
             {
                 "rank": rank,
                 "reps": reps,
                 "percentile": _percentile_from_rank(rank, pct_base),
+                "time": time_val,
+                "tiebreak": tiebreak,
             }
         )
 
